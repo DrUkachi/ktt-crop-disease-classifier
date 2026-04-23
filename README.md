@@ -25,6 +25,120 @@ and the `/predict` service are CPU-only via ONNX Runtime regardless.
 
 ---
 
+## How to use
+
+Three paths — pick the one that matches what you want to verify.
+
+> **Full vs lightweight mode.** The FastAPI service picks its mode automatically
+> at startup based on what's on disk — there is no flag to set.
+>
+> - **Full mode** (Grad-CAM rationale in the `/predict` JSON) requires both
+>   `checkpoints/best.pt` *and* PyTorch installed. Path A (which trains the
+>   model) produces `best.pt`; `pip install -r requirements.txt` installs torch.
+>   `GET /health` returns `"rationale_mode": "full"`.
+> - **Lightweight mode** (ONNX Runtime only, class-cue rationale) runs whenever
+>   the checkpoint is missing OR PyTorch isn't installed. A fresh `git clone`
+>   starts in lightweight mode — `checkpoints/` is gitignored. Paths B, C, and
+>   the Docker image ship lightweight by default. `GET /health` returns
+>   `"rationale_mode": "lightweight"`.
+>
+> The label / confidence / top3 / latency numbers are bit-identical across modes
+> — only the `rationale` string differs. See the [Service](#service) section for
+> the full JSON shape for each mode.
+
+### A. Full reproduce on Google Colab (free CPU, ~30 min)
+
+Exactly what the brief's evaluators will execute. Open a fresh Colab notebook,
+set the runtime to **CPU** (`Runtime → Change runtime type → CPU`), then run
+these four cells:
+
+```python
+# Cell 1 — clone
+!git clone https://github.com/DrUkachi/ktt-crop-disease-classifier.git
+%cd ktt-crop-disease-classifier
+```
+
+```python
+# Cell 2 — install
+!pip install -r requirements.txt
+```
+
+```python
+# Cell 3 — the 2-command reproduce line, verbatim
+!python generate_dataset.py --out data/ && python train.py && python export_onnx.py
+```
+
+```python
+# Cell 4 — verify the three brief gates
+!ls -la model.onnx                  # < 10 MB
+!cat checkpoints/metrics.json       # macro-F1 >= 0.80, clean→field drop < 12 pp
+```
+
+Expected end state: `model.onnx` ≈ **4.34 MB**, macro-F1 **1.0000** clean /
+**0.9867** field-noisy, Δ **1.33 pp**. Training on Colab free CPU takes ~30
+minutes (vs 40 s on the L4 this was developed on).
+
+### B. Inference-only demo (no training, ~3 min)
+
+Uses the committed `model.onnx` and exercises the FastAPI `/predict` endpoint.
+Works on Colab CPU, any laptop, or inside the Docker image.
+
+```python
+# Colab cells
+!git clone https://github.com/DrUkachi/ktt-crop-disease-classifier.git
+%cd ktt-crop-disease-classifier
+!pip install -r service/requirements.txt
+```
+
+```python
+import subprocess, time
+proc = subprocess.Popen(
+    ["uvicorn", "service.app:app", "--host", "0.0.0.0", "--port", "8000"],
+    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+)
+time.sleep(8)  # let uvicorn bind
+```
+
+```python
+!curl -s http://localhost:8000/health
+!curl -s -X POST -F 'image=@samples/maize_rust_1.jpg' http://localhost:8000/predict
+```
+
+Without `checkpoints/best.pt` present the service runs in **lightweight mode**
+(ONNX Runtime only, class-cue rationale). JSON schema is identical — see the
+[Service](#service) section for the full response shape.
+
+### C. Python API — load `model.onnx` directly
+
+No service, no Docker, just a numpy + ONNX Runtime call. Useful for scripting
+or embedding into a notebook:
+
+```python
+import numpy as np, onnxruntime as ort
+from PIL import Image
+
+CLASSES = ["bean_spot", "cassava_mosaic", "healthy", "maize_blight", "maize_rust"]
+MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+STD  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+
+sess = ort.InferenceSession("model.onnx", providers=["CPUExecutionProvider"])
+img  = Image.open("samples/maize_rust_1.jpg").convert("RGB").resize((224, 224))
+arr  = ((np.asarray(img, dtype=np.float32) / 255.0 - MEAN) / STD).transpose(2, 0, 1)[None]
+logits = sess.run(None, {sess.get_inputs()[0].name: arr.astype(np.float32)})[0][0]
+probs  = np.exp(logits) / np.exp(logits).sum()
+print(CLASSES[int(probs.argmax())], float(probs.max()))
+```
+
+### Docker (lightweight mode)
+
+```bash
+docker build -t crop-clf service/
+docker run --rm -p 8000:8000 crop-clf
+curl -X POST -F 'image=@samples/maize_rust_1.jpg' http://localhost:8000/predict
+```
+
+---
+
 ## Repo layout
 
 ```
@@ -178,12 +292,8 @@ When `confidence < 0.6`, both modes add an
 described in [`ussd_fallback.md`](ussd_fallback.md) uses this as the trigger
 to prompt the village agent for a second capture.
 
-### Docker (lightweight mode only)
-
-```bash
-docker build -t crop-clf service/
-docker run --rm -p 8000:8000 crop-clf
-```
+For the Docker (lightweight mode) run-path, see [How to use →
+Docker](#docker-lightweight-mode) above.
 
 ---
 
