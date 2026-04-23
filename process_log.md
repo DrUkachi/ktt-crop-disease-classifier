@@ -155,14 +155,13 @@ README `## Service` section rewritten to describe the two modes + the JSON shape
 > _Result:_ Claude wrote `train.py` (MobileNetV3-Small with ImageNet weights, end-to-end fine-tune, AdamW + cosine LR, class-weighted CE, auto-detect device) and ran it. 15 epochs in 40 seconds on L4; reported val F1, test F1 on both clean and field splits, and ran a leakage check on the manifest source-IDs before I'd even asked — which was the right instinct given how high the clean-test score came in.
 
 ### Prompt discarded
-> _(placeholder — will document one prompt that was rewritten or rejected and why)_
+> _Drafted during Hour 3 when the first three INT8 runs all came back with collapsed or heavily regressed accuracy:_
+> "The static INT8 graph is dropping clean F1 to 0.73 and dynamic is collapsing to 0.07 — implement quantization-aware training: add a fake-quant wrapper around the MobileNetV3-Small backbone, fine-tune for 3 epochs on top of the existing checkpoint, then re-export. Target: clean F1 within 2 pp of FP32."
+>
+> _Why I discarded it:_ QAT would have added at least another hour — a new training loop, a new Torch FX fake-quant graph, a second calibration pass, and I would have had to re-verify the full export chain. We were already past the 180-min target and within striking distance of the 4-hour cap. Instead I asked Claude to sweep five dynamic-quant variants with different op-type and weight-type settings. That took ~5 minutes and found that MatMul/Gemm-only dynamic INT8 preserved F1 at 1.00 while still delivering a 29% size reduction (6.10 → 4.34 MB). Same constraints hit with far less code risk. The QAT draft is preserved in case we ever want to revisit for a larger backbone where the file-size budget gets tighter.
 
 ---
 
 ## Single hardest decision (paragraph)
 
-_(to be written near submission — likely about either the backbone choice
-(MobileNetV3-Small vs EfficientNet-B0 under the 10 MB INT8 budget), the
-quantization strategy (post-training static vs QAT given the 4-hour cap), or
-the USSD relay design (extension officer vs cooperative kiosk vs village
-agent) where business latency, literacy, and unit economics conflict.)_
+The hardest call of the day was accepting that **MobileNetV3-Small does not survive full-graph INT8 quantization on ONNX Runtime**, and choosing to ship a partially-quantized model rather than either (a) burn another 60–90 min on QAT or (b) swap the backbone. I spent about 30 minutes proving the ceiling experimentally — static quantization collapsed clean F1 from 1.00 to 0.73, ORT `quant_pre_process` made it worse (0.73 → 0.73 with a different per-class profile), full-graph dynamic quantization collapsed the model to always predicting one class (F1 0.07, 1/15 macro). The tempting move was QAT: it would have produced a "clean" answer that quantises every Conv and Linear to INT8 uniformly. I rejected it because the 4-hour cap was already tight and QAT opens a second training-loop + re-export failure surface I couldn't afford to debug. Instead I scoped the quantization to classifier-head MatMul/Gemm nodes only, leaving the Hardswish + Squeeze-Excitation Conv backbone in FP32. That met every hard constraint in the brief — size 4.34 MB (budget 10), clean F1 1.00 (budget 0.80), field drop 1.33 pp (budget 12) — with 29 % size reduction and zero accuracy regression, and it's a defendable engineering answer: I'm shipping FP32 where INT8 silently breaks and INT8 where it safely works. The inverse decision (QAT, or a larger backbone to absorb the static-quant loss) would have been "more impressive" on paper but would have traded real margin for cosmetic purity. On a hackathon clock, margin wins.
