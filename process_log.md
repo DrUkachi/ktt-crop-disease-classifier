@@ -84,8 +84,27 @@ int8_clean_to_field_drop_pp    1.33
 
 **Service smoke-test (end-to-end).** `uvicorn service.app:app` → `curl -X POST -F 'image=@samples/maize_rust_1.jpg' http://127.0.0.1:8000/predict` → correct label, confidence 0.9999996, **latency 3.95 ms** on CPU ORT. Same result for cassava_mosaic, healthy, and the field-noisy maize_rust. Response schema matches the brief exactly.
 
-### Hour 4 — TBD
-_(eval notebook with confusion matrix + Grad-CAM rationale, HF Hub push, README metrics, 4-min video, final submission checklist)_
+### Hour 4 — Eval notebook + Grad-CAM module (2026-04-23)
+Wrote `service/gradcam.py` (reusable — the notebook uses it now, `service/app.py` will use the same class in Phase 5) and `notebooks/01_train_eval.ipynb`. The notebook:
+
+- Re-runs [`model.onnx`](model.onnx) on `data/test/` and `data/test_field/` so the figures quote the shipped INT8 artefact, not a separate FP32 eval.
+- Renders a brief-constraints table (size, clean F1, field drop — all green), per-class `classification_report`, confusion matrices for both splits, the 15-epoch train/val curves, and 7 Grad-CAM overlays (one correct per class + every field-set miss).
+- Committed **executed** — outputs are embedded so the repo renders directly on GitHub without needing an evaluator to spin up Jupyter.
+
+**What the field miss tells us.** Per-class F1 on the field-noisy test (macro 0.9867):
+
+| Class | Precision | Recall | F1 |
+|---|---|---|---|
+| bean_spot | 0.9677 | 1.0000 | 0.9836 |
+| cassava_mosaic | 1.0000 | 0.9667 | 0.9831 |
+| healthy | 0.9677 | 1.0000 | 0.9836 |
+| maize_blight | 1.0000 | 0.9667 | 0.9831 |
+| maize_rust | 1.0000 | 1.0000 | 1.0000 |
+
+Exactly 2 misclassifications across 150 field samples: one `cassava_mosaic` called `healthy`, one `maize_blight` called `bean_spot`. Both show up with Grad-CAM overlays in the notebook — gives me a concrete answer for the video's "what would you add to close the gap" question (the honest answer is: add Gaussian blur σ ∈ [0, 1.0] to train-time augmentation — the two misses are on the highest-blur field samples).
+
+### Hour 5 — TBD
+_(Phase 5: wire Grad-CAM into service/app.py rationale field + low-confidence escalation hint; Phase 6: HF Hub push, README metrics, 4-min video, final submission checklist)_
 
 ---
 
