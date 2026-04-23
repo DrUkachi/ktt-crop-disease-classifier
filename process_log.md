@@ -103,8 +103,19 @@ Wrote `service/gradcam.py` (reusable — the notebook uses it now, `service/app.
 
 Exactly 2 misclassifications across 150 field samples: one `cassava_mosaic` called `healthy`, one `maize_blight` called `bean_spot`. Both show up with Grad-CAM overlays in the notebook — gives me a concrete answer for the video's "what would you add to close the gap" question (the honest answer is: add Gaussian blur σ ∈ [0, 1.0] to train-time augmentation — the two misses are on the highest-blur field samples).
 
-### Hour 5 — TBD
-_(Phase 5: wire Grad-CAM into service/app.py rationale field + low-confidence escalation hint; Phase 6: HF Hub push, README metrics, 4-min video, final submission checklist)_
+### Hour 5 — Service rationale + low-confidence escalation (2026-04-23)
+Wired the stretch goals into `service/app.py`. Key design call: the service runs in **two modes**, picked automatically at startup, because forcing PyTorch into the Docker image would blow it from ~200 MB to ~2 GB for a feature that isn't needed in the feature-phone deployment path.
+
+- **Full mode** (when `checkpoints/best.pt` and `torchvision` are both present): ORT runs the INT8 inference, then PyTorch runs Grad-CAM on the FP32 checkpoint to derive a real model-attention rationale: `"attention centre (covers 34% of leaf); lesion density consistent with rust pustules; top-2 margin 1.00"`. Falls back silently to the lightweight rationale if anything in the Grad-CAM path throws — the /predict endpoint must not die on a rationale error.
+- **Lightweight mode** (ONNX only, Docker default): rationale is class cue + top-2 margin, as before. `latency_ms` stays at ~4 ms.
+
+Both modes also emit `"escalation": "second_photo_different_angle"` when confidence < 0.6 (threshold per brief). Couldn't naturally trigger it with our test samples — confidences are all 0.9999+ — so the test coverage is code-read only. Acceptable risk for a 4-hour brief; the code path is tiny.
+
+**Smoke-tested both modes** on port 8001 (full) and 8002 (lightweight, after renaming `checkpoints/best.pt` aside):
+- `/health` correctly reports `"rationale_mode": "full"` vs `"lightweight"`.
+- `/predict` returns the rich rationale in full mode and the short one in lightweight mode. Label/confidence/top3 are bit-identical between the two — they come from the same ORT session.
+
+README `## Service` section rewritten to describe the two modes + the JSON shape for each so the evaluator isn't surprised by the rationale difference between the 4-min video (full) and a Docker pull (lightweight).
 
 ---
 

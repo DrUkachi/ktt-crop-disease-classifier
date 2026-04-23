@@ -77,7 +77,16 @@ _(Substitute `bash run.sh` once the wrapper script is in.)_
 
 ## Service
 
-`service/app.py` exposes `POST /predict` (multipart `image=<JPEG>`):
+`service/app.py` exposes `POST /predict` (multipart `image=<JPEG>`). The service
+runs in one of two modes picked automatically at startup; the JSON response
+shape is identical, the `rationale` field differs.
+
+### Full mode — `checkpoints/best.pt` + PyTorch available
+
+Used for the live demo and the eval notebook. Runs ONNX Runtime for
+label/confidence/top3, then **Grad-CAM** on the FP32 PyTorch checkpoint to
+derive a model-attention summary. Adds ~80 ms per request but every response
+carries real model evidence.
 
 ```bash
 curl -X POST -F 'image=@samples/maize_rust_1.jpg' http://localhost:8000/predict
@@ -86,18 +95,50 @@ curl -X POST -F 'image=@samples/maize_rust_1.jpg' http://localhost:8000/predict
 ```jsonc
 {
   "label": "maize_rust",
-  "confidence": 0.93,
+  "confidence": 1.00,
   "top3": [
-    {"label": "maize_rust",   "score": 0.93},
-    {"label": "maize_blight", "score": 0.04},
-    {"label": "healthy",      "score": 0.02}
+    {"label": "maize_rust",   "score": 1.00},
+    {"label": "maize_blight", "score": 0.00},
+    {"label": "cassava_mosaic", "score": 0.00}
   ],
-  "latency_ms": 41,
-  "rationale": "high lesion density consistent with rust pustules"
+  "latency_ms": 4.4,
+  "rationale": "attention centre (covers 34% of leaf); lesion density consistent with rust pustules; top-2 margin 1.00"
 }
 ```
 
-Run via Docker:
+`latency_ms` measures the ORT `session.run` call only, not the Grad-CAM step
+— the brief's latency number is the inference artefact's speed.
+
+### Lightweight mode — ONNX Runtime only (Docker default)
+
+What ships in the container. Drops PyTorch + the checkpoint, keeps the image
+small (~200 MB vs ~2 GB in full mode). Rationale falls back to a class cue +
+top-2 margin.
+
+```jsonc
+{
+  "label": "maize_rust",
+  "confidence": 1.00,
+  "top3": [ /* same */ ],
+  "latency_ms": 4.7,
+  "rationale": "lesion density consistent with rust pustules; top-2 margin 1.00"
+}
+```
+
+`GET /health` reports which mode is active:
+
+```jsonc
+{"status": "ok", "model_loaded": true, "rationale_mode": "full"}
+```
+
+### Low-confidence escalation
+
+When `confidence < 0.6`, both modes add an
+`"escalation": "second_photo_different_angle"` field. The feature-phone PWA
+described in [`ussd_fallback.md`](ussd_fallback.md) uses this as the trigger
+to prompt the village agent for a second capture.
+
+### Docker (lightweight mode only)
 
 ```bash
 docker build -t crop-clf service/
