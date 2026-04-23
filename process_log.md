@@ -57,8 +57,32 @@ Both hard targets met on the first run — no re-training needed. The reason the
 
 Checkpoint: `checkpoints/best.pt` (6.2 MB FP32, gitignored). Training log committed via `train.py`. Next: INT8 ONNX export and a fresh eval of the quantised model to confirm no regression.
 
-### Hour 3 — TBD
-_(ONNX export + post-training static INT8, size check < 10 MB, service smoke-test with the sample JPEGs)_
+### Hour 3 — Quantization + service smoke-test (2026-04-23)
+Wrote `export_onnx.py` and hit the single hardest problem of the day: **MobileNetV3-Small does not survive full-graph INT8 on ONNX Runtime**. I burned ~30 min proving this experimentally before accepting it and swapping strategy. Empirical table, same trained checkpoint, same test set:
+
+| Strategy | Size | Clean F1 | Notes |
+|---|---|---|---|
+| FP32 ONNX | 6.10 MB | 1.0000 | baseline |
+| Static INT8 (QDQ, QUInt8 act / QInt8 wt, per-channel, 100-img calib) | 1.85 MB | 0.7570 | −24 pp — Hardswish + SE blocks |
+| Static INT8 + ORT `quant_pre_process` (BN fusion) | 1.87 MB | 0.7299 | −27 pp — preprocess made it worse |
+| Dynamic INT8 full-graph (QInt8, per-channel) | 1.70 MB | 0.0667 | **collapsed** — always predicts one class; ORT's CPU ConvInteger kernel doesn't handle this backbone's depthwise + SE |
+| Dynamic INT8 full-graph (QUInt8, per-tensor) | 1.70 MB | 0.0667 | same collapse |
+| **Dynamic INT8, `MatMul`/`Gemm` only, + preprocess** | **4.34 MB** | **1.0000** | zero regression, shipped |
+
+The winning strategy quantises **only the classifier-head linear layers** (MatMul/Gemm) and leaves the Conv backbone in FP32. 29 % file-size reduction (6.10 → 4.34 MB), well under the 10 MB budget, zero F1 regression. QAT would fix the full-graph case but is out of scope for the 4-hour cap.
+
+**Defense gates added.** `export_onnx.py` now refuses to ship `model.onnx` (and unlinks the file on failure) if any of three brief constraints are violated: size ≥ 10 MB, clean F1 < 0.80, or clean→field drop > 12 pp. Mirror of the size check that was already there for quantisation. Answering my own earlier question: "at what point do we test the drop?" — now, at export-time, hard fail.
+
+**INT8 metrics persisted** to `checkpoints/metrics.json` alongside the FP32 training history so Phase 6 (README + 4-min video) has a single source of truth:
+
+```
+int8_model_mb                  4.335
+int8_macro_f1_clean            1.0000
+int8_macro_f1_field            0.9867
+int8_clean_to_field_drop_pp    1.33
+```
+
+**Service smoke-test (end-to-end).** `uvicorn service.app:app` → `curl -X POST -F 'image=@samples/maize_rust_1.jpg' http://127.0.0.1:8000/predict` → correct label, confidence 0.9999996, **latency 3.95 ms** on CPU ORT. Same result for cassava_mosaic, healthy, and the field-noisy maize_rust. Response schema matches the brief exactly.
 
 ### Hour 4 — TBD
 _(eval notebook with confusion matrix + Grad-CAM rationale, HF Hub push, README metrics, 4-min video, final submission checklist)_
