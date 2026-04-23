@@ -1,0 +1,26 @@
+# Top-level requirements: training + dataset generation.
+# Service-only deps (slimmer image) live in service/requirements.txt.
+
+# --- core ---
+numpy==1.26.4
+Pillow==10.4.0
+
+# --- dataset generator ---
+datasets==2.21.0
+huggingface_hub==0.24.6
+
+# --- training (Phase 1) ---
+torch==2.4.1
+torchvision==0.19.1
+
+# --- export + quantization (Phase 2) ---
+onnx==1.17.0
+onnxruntime==1.19.2
+
+# --- evaluation ---
+scikit-learn==1.5.2
+
+# --- service smoke-test (also pinned in service/requirements.txt) ---
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+python-multipart==0.0.9
