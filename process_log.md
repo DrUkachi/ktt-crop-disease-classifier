@@ -41,14 +41,27 @@ Probed the Hub via `HfApi.list_datasets` and hand-verified three live replacemen
 
 Commits: `35b7d75 Phase 1: swap to live HF mirrors and land demo samples`.
 
-### Hour 2 — TBD
-_(quantization to INT8, ONNX export, size verification < 10 MB)_
+### Hour 2 — Training (2026-04-23)
+Switched the Lightning Studio to GPU (NVIDIA L4, 23 GB VRAM) and wrote `train.py`. Fine-tuned MobileNetV3-Small (ImageNet pretrained) end-to-end on the 1200-image train set. Single AdamW + cosine LR, batch 64, 15 epochs, light augmentation (horizontal flip, ±10° rotation, mild colour jitter). **Deliberately did not add blur / JPEG re-compression to train-time augmentation**, so the clean → field gap I report is honest — the brief scores robustness on the field set and training on the noise recipe would be training-on-test.
+
+Run: **40.2 seconds total** on the L4, loss 0.35 → 0.016 by epoch 2, validation macro-F1 saturates at 1.0000 from epoch 2 onward.
+
+| Split | Macro-F1 |
+|---|---|
+| Val (clean) — best | 1.0000 |
+| Test (clean) | 1.0000 |
+| Test (field-noisy) | 0.9867 |
+| **Δ clean → field** | **1.33 pp** (budget < 12 pp) |
+
+Both hard targets met on the first run — no re-training needed. The reason the clean number is perfect rather than ~90% is not leakage: I cross-checked `data/manifest.json` and each class has 300 unique source-IDs with zero overlap across train/val/test. The honest reading is that PlantVillage (the source of the three maize classes) is a studio-lit dataset with a consistent background per class, and our 5 labels span three plant species with very different leaf morphology (maize is long and narrow, cassava is palmate, beans are oval). ImageNet-pretrained features already separate those distributions almost trivially. The number I'll quote in the video is the **field-drop (1.33 pp)** — that's the one that measures generalisation.
+
+Checkpoint: `checkpoints/best.pt` (6.2 MB FP32, gitignored). Training log committed via `train.py`. Next: INT8 ONNX export and a fresh eval of the quantised model to confirm no regression.
 
 ### Hour 3 — TBD
-_(FastAPI service, Dockerfile, sample curl run, robustness eval on field set)_
+_(ONNX export + post-training static INT8, size check < 10 MB, service smoke-test with the sample JPEGs)_
 
 ### Hour 4 — TBD
-_(ussd_fallback.md, README polish, video, final push)_
+_(eval notebook with confusion matrix + Grad-CAM rationale, HF Hub push, README metrics, 4-min video, final submission checklist)_
 
 ---
 
@@ -80,8 +93,12 @@ _(ussd_fallback.md, README polish, video, final push)_
 >
 > _Result:_ Claude inventoried the scaffold, proposed a 7-phase plan mapped to the scoring weights (Tech / Model / Data / Product / Comms / Innovation), and flagged two judgement calls back to me — backbone (MobileNetV3-Small vs EfficientNet-B0 under the 10 MB INT8 budget) and whether Grad-CAM is worth the extra 15 min for the rationale field. I locked in MobileNetV3-Small + Grad-CAM.
 
-### Prompt 3 — _(to fill in: quantization prompt)_
-> _(placeholder for the next prompt — will be added when sent)_
+### Prompt 3 — Training kickoff (used)
+> "I have switched to GPU now let's train"
+>
+> _Prior context in same session:_ I had asked Claude to hold until I flipped the Lightning Studio to GPU; this unblocked Phase 2.
+>
+> _Result:_ Claude wrote `train.py` (MobileNetV3-Small with ImageNet weights, end-to-end fine-tune, AdamW + cosine LR, class-weighted CE, auto-detect device) and ran it. 15 epochs in 40 seconds on L4; reported val F1, test F1 on both clean and field splits, and ran a leakage check on the manifest source-IDs before I'd even asked — which was the right instinct given how high the clean-test score came in.
 
 ### Prompt discarded
 > _(placeholder — will document one prompt that was rewritten or rejected and why)_
