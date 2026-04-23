@@ -8,23 +8,25 @@ Recipe (from the candidate brief, page 1):
   * Field-robustness variant: random Gaussian blur (sigma in [0, 1.5]),
     JPEG re-compression (q in [50, 85]), and brightness jitter.
 
-Sources (three HF dataset mirrors, all public, all license-permissive):
+Sources (three HF dataset mirrors, all public, all license-permissive as of
+2026-04). These were chosen after the scaffold's originally-picked mirrors
+went dead; the swap is documented in process_log.md.
 
-  PlantVillage     -> "yusufberkay/plantvillage-dataset"  (maize classes)
-  Cassava          -> "Dauka-CA/Cassava-Leaf-Disease-Detection-Train"
-  Beans            -> "nateraw/beans"                     (angular leaf spot)
-
-If you already have any of these unpacked locally, point the script at the
-parent dir with `--source-dir <path>` and the script will skip the download.
+  PlantVillage -> "BrandonFors/Plant-Diseases-PlantVillage-Dataset"
+                  (maize classes at ClassLabel indices 8, 9, 10)
+  Cassava      -> "dpdl-benchmark/cassava"
+                  (CMD = label 3; labels are raw int64, no ClassLabel names)
+  Beans        -> "AI-Lab-Makerere/beans"
+                  (angular_leaf_spot = ClassLabel index 0)
 
 Usage
 -----
 
-    # Auto-download from HF and build everything (default):
+    # Default: auto-download from HF and build everything:
     python generate_dataset.py --out data/
 
-    # Use local copies (expects ./raw/{plantvillage,cassava,beans}):
-    python generate_dataset.py --source-dir ./raw --out data/
+    # Use a local HF cache (same as default on re-runs):
+    python generate_dataset.py --out data/
 
     # Only rebuild the field-noisy test set:
     python generate_dataset.py --out data/ --field-only
@@ -54,44 +56,56 @@ import numpy as np
 from PIL import Image, ImageEnhance, ImageFilter
 
 # ---------------------------------------------------------------------------
-# Class -> source mapping. Each target class draws from one (source, subdir)
-# pair. Subdirs match the canonical folder names in the upstream mirrors.
+# Class -> source mapping. Each target class is drawn from one HF dataset
+# mirror, one split, and one integer label index.
 # ---------------------------------------------------------------------------
 
 TARGET_CLASSES = ["bean_spot", "cassava_mosaic", "healthy", "maize_blight", "maize_rust"]
-PER_CLASS = 300                       # ~300 per class per the brief
+PER_CLASS = 300
 IMG_SIZE = 224
 SPLITS = {"train": 0.8, "val": 0.1, "test": 0.1}
 SEED = 1337
 
-# (hf_dataset_id, image_column, label_column, label_value, local_subdir_hint)
-# `local_subdir_hint` is what we expect under --source-dir if downloads are
-# skipped. The HF column names below match the named mirrors as of 2026-04.
 SOURCE_MAP = {
+    # Maize classes: PlantVillage mirror. 38-class ClassLabel.
     "healthy": dict(
-        hf_id="yusufberkay/plantvillage-dataset",
-        label_value="Corn_(maize)___healthy",
-        local_hint=("plantvillage", "Corn_(maize)___healthy"),
+        hf_id="BrandonFors/Plant-Diseases-PlantVillage-Dataset",
+        split="train",
+        label_col="label",
+        label_idx=10,                      # Corn_(maize)___healthy
+        label_name="Corn_(maize)___healthy",
     ),
     "maize_rust": dict(
-        hf_id="yusufberkay/plantvillage-dataset",
-        label_value="Corn_(maize)___Common_rust_",
-        local_hint=("plantvillage", "Corn_(maize)___Common_rust_"),
+        hf_id="BrandonFors/Plant-Diseases-PlantVillage-Dataset",
+        split="train",
+        label_col="label",
+        label_idx=8,                       # Corn_(maize)___Common_rust_
+        label_name="Corn_(maize)___Common_rust_",
     ),
     "maize_blight": dict(
-        hf_id="yusufberkay/plantvillage-dataset",
-        label_value="Corn_(maize)___Northern_Leaf_Blight",
-        local_hint=("plantvillage", "Corn_(maize)___Northern_Leaf_Blight"),
+        hf_id="BrandonFors/Plant-Diseases-PlantVillage-Dataset",
+        split="train",
+        label_col="label",
+        label_idx=9,                       # Corn_(maize)___Northern_Leaf_Blight
+        label_name="Corn_(maize)___Northern_Leaf_Blight",
     ),
+    # Cassava mosaic disease: dpdl-benchmark mirror. Raw int labels, not ClassLabel.
+    # Label 3 corresponds to "Cassava Mosaic Disease" (confirmed by filename
+    # pattern train-cmd-*.jpg on the mirror).
     "cassava_mosaic": dict(
-        hf_id="Dauka-CA/Cassava-Leaf-Disease-Detection-Train",
-        label_value="Cassava Mosaic Disease (CMD)",
-        local_hint=("cassava", "Cassava Mosaic Disease (CMD)"),
+        hf_id="dpdl-benchmark/cassava",
+        split="train",
+        label_col="label",
+        label_idx=3,
+        label_name="Cassava Mosaic Disease (CMD)",
     ),
+    # Bean angular leaf spot: Makerere iBeans mirror. ClassLabel with 3 names.
     "bean_spot": dict(
-        hf_id="nateraw/beans",
-        label_value="angular_leaf_spot",
-        local_hint=("beans", "angular_leaf_spot"),
+        hf_id="AI-Lab-Makerere/beans",
+        split="train",
+        label_col="labels",
+        label_idx=0,
+        label_name="angular_leaf_spot",
     ),
 }
 
@@ -107,7 +121,7 @@ def _resize_square(img: Image.Image, size: int = IMG_SIZE) -> Image.Image:
     left = (w - s) // 2
     top = (h - s) // 2
     img = img.crop((left, top, left + s, top + s))
-    return img.resize((size, size), Image.BILINEAR)
+    return img.resize((size, size), Image.Resampling.BILINEAR)
 
 
 def _apply_field_noise(img: Image.Image, rng: random.Random) -> Image.Image:
@@ -127,75 +141,66 @@ def _apply_field_noise(img: Image.Image, rng: random.Random) -> Image.Image:
 
 
 # ---------------------------------------------------------------------------
-# Source loaders
+# Source loader (HF)
 # ---------------------------------------------------------------------------
 
 @dataclass
 class SourceItem:
     image: Image.Image
-    src_id: str          # e.g., "plantvillage:Corn_(maize)___Common_rust_:0007.jpg"
+    src_id: str
 
 
-def _load_local(source_dir: Path, target_class: str) -> Iterable[SourceItem]:
-    cfg = SOURCE_MAP[target_class]
-    parent, subdir = cfg["local_hint"]
-    folder = source_dir / parent / subdir
-    if not folder.exists():
-        return []
-    files = sorted(folder.glob("*.jpg")) + sorted(folder.glob("*.png")) + sorted(folder.glob("*.JPG"))
-    for fp in files:
-        try:
-            img = Image.open(fp).convert("RGB")
-        except Exception:
-            continue
-        yield SourceItem(image=img, src_id=f"{parent}:{subdir}:{fp.name}")
+def _load_hf(target_class: str, max_items: int) -> list[SourceItem]:
+    """Stream from a HuggingFace dataset mirror and keep rows matching label_idx.
 
-
-def _load_hf(target_class: str, max_items: int) -> Iterable[SourceItem]:
-    """Stream from a HuggingFace dataset mirror.
-
-    Streaming avoids downloading the full archive (PlantVillage is >1 GB) when
-    we only want ~300 images per class.
+    We use streaming so fresh Colab runs don't have to materialise the entire
+    PlantVillage archive (~850 MB) before we start selecting. On re-runs the HF
+    cache short-circuits the stream.
     """
     try:
-        from datasets import load_dataset  # type: ignore
+        from datasets import load_dataset
     except ImportError as e:
         raise SystemExit(
-            "datasets library is required for --hf-download mode.\n"
-            "    pip install datasets"
+            "datasets library is required.\n    pip install datasets"
         ) from e
 
     cfg = SOURCE_MAP[target_class]
-    ds = load_dataset(cfg["hf_id"], split="train", streaming=True)
+    ds = load_dataset(cfg["hf_id"], split=cfg["split"], streaming=True)
 
-    label_value = cfg["label_value"]
-    found = 0
+    out: list[SourceItem] = []
+    label_col = cfg["label_col"]
+    want_idx = cfg["label_idx"]
+
     for i, row in enumerate(ds):
-        # Different mirrors expose the label under different column names.
-        label = (
-            row.get("label")
-            or row.get("labels")
-            or row.get("class")
-            or row.get("category")
-        )
-        # If the dataset's label is an int, it indexes into ds.features['label'].names
-        # which we can't introspect in streaming mode without a peek. Mirrors above
-        # expose string labels directly; if you swap a mirror, update this branch.
-        if isinstance(label, str) and label != label_value:
+        raw = row.get(label_col)
+        if raw is None:
             continue
+        # `raw` can be int (ClassLabel / raw int64) or str (if a mirror stores
+        # label as a string). Compare both ways.
+        if isinstance(raw, str):
+            if raw != cfg["label_name"]:
+                continue
+        else:
+            if int(raw) != want_idx:
+                continue
 
         img_field = row.get("image") or row.get("img")
         if img_field is None:
             continue
-        if isinstance(img_field, dict) and "bytes" in img_field:
+        if isinstance(img_field, dict):
+            if "bytes" not in img_field:
+                continue
             img = Image.open(io.BytesIO(img_field["bytes"])).convert("RGB")
+        elif isinstance(img_field, Image.Image):
+            img = img_field.convert("RGB")
         else:
-            img = img_field.convert("RGB")  # PIL.Image already
+            continue
 
-        yield SourceItem(image=img, src_id=f"{cfg['hf_id']}:{i}")
-        found += 1
-        if found >= max_items:
-            return
+        out.append(SourceItem(image=img, src_id=f"{cfg['hf_id']}:{cfg['split']}:{i}"))
+        if len(out) >= max_items:
+            return out
+
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -214,37 +219,27 @@ def _split_indices(n: int, rng: random.Random) -> dict[str, list[int]]:
     }
 
 
-def build_dataset(out_dir: Path, source_dir: Path | None, hf_download: bool) -> dict:
+def build_dataset(out_dir: Path) -> dict:
     rng = random.Random(SEED)
     np.random.seed(SEED)
 
-    manifest: dict = {"per_class": {}, "splits": {s: 0 for s in SPLITS}}
+    manifest: dict = {"per_class": {}, "splits": {s: 0 for s in SPLITS}, "source_map": {}}
+    for cls, cfg in SOURCE_MAP.items():
+        manifest["source_map"][cls] = {
+            "hf_id": cfg["hf_id"],
+            "label_name": cfg["label_name"],
+            "label_idx": cfg["label_idx"],
+        }
 
     for cls in TARGET_CLASSES:
-        items: list[SourceItem] = []
-
-        if source_dir is not None:
-            items = list(_load_local(source_dir, cls))
-            if items:
-                print(f"[{cls}] loaded {len(items)} local images")
+        print(f"[{cls}] streaming from HF: {SOURCE_MAP[cls]['hf_id']} (label={SOURCE_MAP[cls]['label_name']})")
+        items = _load_hf(cls, max_items=PER_CLASS)
 
         if not items:
-            if not hf_download:
-                raise SystemExit(
-                    f"No local images for class '{cls}' under {source_dir}.\n"
-                    f"  Re-run with --hf-download, or place images in "
-                    f"{source_dir}/{SOURCE_MAP[cls]['local_hint'][0]}/"
-                    f"{SOURCE_MAP[cls]['local_hint'][1]}/"
-                )
-            print(f"[{cls}] streaming from HF: {SOURCE_MAP[cls]['hf_id']}")
-            items = list(_load_hf(cls, max_items=PER_CLASS))
+            raise SystemExit(f"[{cls}] no images found — check HF mirror availability")
 
-        if len(items) > PER_CLASS:
-            rng.shuffle(items)
-            items = items[:PER_CLASS]
-
-        if not items:
-            raise SystemExit(f"[{cls}] no images found from any source")
+        rng.shuffle(items)
+        items = items[:PER_CLASS]
 
         splits = _split_indices(len(items), rng)
         manifest["per_class"][cls] = {
@@ -298,8 +293,6 @@ def build_field_set(out_dir: Path) -> int:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--out", type=Path, default=Path("data"), help="output dataset root")
-    p.add_argument("--source-dir", type=Path, default=None, help="local raw-data parent dir")
-    p.add_argument("--hf-download", action="store_true", help="stream from HuggingFace mirrors")
     p.add_argument("--field-only", action="store_true", help="only rebuild test_field/ from existing test/")
     args = p.parse_args()
 
@@ -310,11 +303,7 @@ def main() -> None:
         build_field_set(out_dir)
         return
 
-    if args.source_dir is None and not args.hf_download:
-        # Default: try HF download if no local source is provided.
-        args.hf_download = True
-
-    manifest = build_dataset(out_dir, args.source_dir, args.hf_download)
+    manifest = build_dataset(out_dir)
     n_field = build_field_set(out_dir)
     manifest["test_field"] = n_field
 
