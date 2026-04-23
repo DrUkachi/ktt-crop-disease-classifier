@@ -3,6 +3,8 @@
 > AIMS KTT Hackathon · Tier 2 · Edge-AI for Offline Crop Diagnostics
 > 5 classes · MobileNetV3-Small backbone · **INT8 ONNX, 4.34 MB** · macro-F1 **1.000 clean / 0.987 field-noisy** · FastAPI service · Grad-CAM rationale · USSD fallback
 
+[**Model on Hugging Face Hub →** `DrUkachi/ktt-crop-disease-classifier`](https://huggingface.co/DrUkachi/ktt-crop-disease-classifier)
+
 A compact image classifier that tells a farmer whether a maize, cassava, or
 bean leaf is **healthy**, has **maize_rust**, **maize_blight**,
 **cassava_mosaic**, or **bean_spot** — and a non-smartphone delivery path so
@@ -196,7 +198,7 @@ Kinyarwanda + French SMS templates, and 1,000-farmer unit economics.
 
 - **Repo:** this repo — [`DrUkachi/ktt-crop-disease-classifier`](https://github.com/DrUkachi/ktt-crop-disease-classifier).
 - **Model:** [`model.onnx`](model.onnx) at the repo root — INT8 ONNX, 4.34 MB.
-  Mirrored on Hugging Face Hub at _TBD_ (pushed separately with the model card).
+  Mirrored on Hugging Face Hub at [`DrUkachi/ktt-crop-disease-classifier`](https://huggingface.co/DrUkachi/ktt-crop-disease-classifier) with a full model card (YAML-indexed for task / license / metrics).
 - **4-minute video:** _TBD — YouTube unlisted_ (see [`process_log.md`](process_log.md) for the segment script).
 - **Eval notebook:** [`notebooks/01_train_eval.ipynb`](notebooks/01_train_eval.ipynb) — rendered inline on GitHub.
 - **Dataset generator:** [`generate_dataset.py`](generate_dataset.py) — streams from 3 HF mirrors.
