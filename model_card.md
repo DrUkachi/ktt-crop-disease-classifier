@@ -1,9 +1,3 @@
-<!--
-Hugging Face model card — paste this file's contents as the README.md in the
-Hub model repo at https://huggingface.co/DrUkachi/ktt-crop-disease-classifier.
-The YAML front-matter is what the Hub uses to populate tags, task, and the
-automatic "evaluation results" block.
--->
 ---
 language:
   - en
